@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Мозг мухи</title>
+<style>
+  :root {
+    --bg: #07090c;
+    --fg: #d7dee6;
+    --dim: #6c7b8a;
+    --line: rgba(255,255,255,.09);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 13px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  #gl { position: fixed; inset: 0; }
+  .panel {
+    position: fixed; z-index: 10;
+    background: rgba(10,13,17,.78);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px 14px;
+    backdrop-filter: blur(12px);
+  }
+  #hud { top: 16px; left: 16px; min-width: 210px; }
+  #hud h1 {
+    font-size: 12px; font-weight: 600; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--fg); margin-bottom: 10px;
+  }
+  .row { display: flex; justify-content: space-between; gap: 18px; color: var(--dim); }
+  .row b { color: var(--fg); font-weight: 500; font-variant-numeric: tabular-nums; }
+  #legend { bottom: 16px; left: 16px; }
+  .leg { display: flex; align-items: center; gap: 8px; color: var(--dim); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  #act { bottom: 16px; right: 16px; width: 230px; }
+  #bar { height: 3px; background: rgba(255,255,255,.08); border-radius: 2px; margin-top: 8px; overflow: hidden; }
+  #barfill { height: 100%; width: 0%; background: linear-gradient(90deg,#4a9eb8,#ffd48a); transition: width .1s; }
+  #note { margin-top: 10px; font-size: 11px; color: var(--dim); line-height: 1.45; }
+  #status { position: fixed; top: 16px; right: 16px; z-index: 10; color: var(--dim); font-size: 11px; }
+  .on { color: #7fd6a0 !important; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+
+<div class="panel" id="hud">
+  <h1>Drosophila · MaleCNS v1.0</h1>
+  <div class="row"><span>нейронов</span><b id="n">—</b></div>
+  <div class="row"><span>связей</span><b id="e">—</b></div>
+  <div class="row"><span>устройство</span><b id="dev">—</b></div>
+  <div class="row"><span>спайков/кадр</span><b id="sp">—</b></div>
+  <div class="row"><span>fps</span><b id="fps">—</b></div>
+</div>
+
+<div class="panel" id="legend"></div>
+
+<div class="panel" id="act">
+  <div class="row"><span>активность сети</span><b id="pct">0.00%</b></div>
+  <div id="bar"><div id="barfill"></div></div>
+  <div id="note">Живой выход LIF-симуляции. Координаты — измеренные позиции сомы, не рисунок.</div>
+</div>
+
+<div id="status">подключение…</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js" } }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+const $ = id => document.getElementById(id);
+const fmt = n => n.toLocaleString('ru-RU');
+
+const renderer = new THREE.WebGLRenderer({ canvas: $('gl'), antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x07090c, 0.045);
+
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.01, 100);
+camera.position.set(0, 0, 5.2);
+
+// ---- вращение мышью + автоповорот -------------------------------------
+const rig = new THREE.Group();
+scene.add(rig);
+let yaw = 0.6, pitch = -0.15, drag = false, px = 0, py = 0, auto = true;
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+$('gl').addEventListener('pointerdown', e => { drag = true; auto = false; px = e.clientX; py = e.clientY; });
+addEventListener('pointerup', () => drag = false);
+addEventListener('pointermove', e => {
+  if (!drag) return;
+  yaw += (e.clientX - px) * 0.005;
+  pitch = Math.max(-1.4, Math.min(1.4, pitch + (e.clientY - py) * 0.005));
+  px = e.clientX; py = e.clientY;
+});
+addEventListener('wheel', e => {
+  camera.position.z = Math.max(3, Math.min(25, camera.position.z + e.deltaY * 0.004));
+}, { passive: true });
+
+// ---- шейдер точек ------------------------------------------------------
+const vert = /* glsl */`
+  attribute float intensity;
+  attribute vec3 baseColor;
+  varying float vI;
+  varying vec3 vC;
+  void main() {
+    vI = intensity; vC = baseColor;
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    gl_PointSize = (0.85 + 5.8 * intensity) * (9.0 / -mv.z);
+    gl_Position = projectionMatrix * mv;
+  }`;
+
+const frag = /* glsl */`
+  varying float vI;
+  varying vec3 vC;
+  void main() {
+    vec2 d = gl_PointCoord - vec2(0.5);
+    float r = dot(d, d);
+    if (r > 0.25) discard;
+    float soft = 1.0 - smoothstep(0.0, 0.25, r);
+    // Спайк: тёплое ядро, уходящее в белый на пике
+    vec3 hot = mix(vec3(1.0, 0.62, 0.22), vec3(1.0, 0.97, 0.90), vI * vI);
+    vec3 col = mix(vC, hot, smoothstep(0.0, 0.35, vI));
+    // База почти прозрачна: 126k точек в аддитивном режиме иначе выбеливают кадр
+    float a = 0.032 + 0.94 * vI * vI;
+    gl_FragColor = vec4(col, soft * a);
+  }`;
+
+const material = new THREE.ShaderMaterial({
+  vertexShader: vert, fragmentShader: frag,
+  transparent: true, depthWrite: false,
+  blending: THREE.AdditiveBlending,
+});
+
+let intensity, geom, N = 0;
+const GROUPS = [
+  ['optic', 0x81b5c8], ['central', 0xcfcac0], ['descending', 0xdfb672],
+  ['vnc', 0xaf9bc3], ['other', 0x6c7777],
+];
+
+async function boot() {
+  const meta = await (await fetch('/meta')).json();
+  $('n').textContent = fmt(meta.neurons);
+  $('e').textContent = fmt(meta.edges);
+  $('dev').textContent = meta.device;
+
+  $('legend').innerHTML = meta.groups.map(g =>
+    `<div class="leg"><span class="dot" style="background:${g.color}"></span>
+     <span>${g.key}</span><b style="margin-left:auto;color:var(--fg)">${fmt(g.count)}</b></div>`
+  ).join('');
+
+  const buf = await (await fetch('/atlas')).arrayBuffer();
+  N = new Uint32Array(buf, 0, 1)[0];
+  const pos = new Float32Array(buf, 4, N * 3);
+  const grp = new Uint8Array(buf, 4 + N * 12, N);
+
+  const colors = new Float32Array(N * 3);
+  const c = new THREE.Color();
+  for (let i = 0; i < N; i++) {
+    c.setHex(GROUPS[grp[i]][1]);
+    colors[i*3] = c.r; colors[i*3+1] = c.g; colors[i*3+2] = c.b;
+  }
+  intensity = new Float32Array(N);
+
+  geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geom.setAttribute('baseColor', new THREE.BufferAttribute(colors, 3));
+  geom.setAttribute('intensity', new THREE.BufferAttribute(intensity, 1));
+  rig.add(new THREE.Points(geom, material));
+
+  connect();
+  animate();
+}
+
+// ---- поток спайков -----------------------------------------------------
+let spikeCount = 0;
+function connect() {
+  const sock = new WebSocket(`ws://${location.host}/ws`);
+  sock.binaryType = 'arraybuffer';
+  sock.onopen = () => { $('status').textContent = '● симуляция идёт'; $('status').className = 'on'; };
+  sock.onclose = () => {
+    $('status').textContent = '○ соединение потеряно'; $('status').className = '';
+    setTimeout(connect, 1500);
+  };
+  sock.onmessage = ev => {
+    const idx = new Uint32Array(ev.data);
+    spikeCount = idx.length;
+    for (let i = 0; i < idx.length; i++) intensity[idx[i]] = 1.0;
+  };
+}
+
+// ---- цикл --------------------------------------------------------------
+let last = performance.now(), frames = 0, tAcc = 0;
+function animate() {
+  requestAnimationFrame(animate);
+  const now = performance.now(), dt = (now - last) / 1000; last = now;
+
+  if (auto) yaw += dt * 0.12;
+  rig.rotation.set(pitch, yaw, 0);
+
+  const decay = Math.pow(0.055, dt);
+  for (let i = 0; i < N; i++) intensity[i] *= decay;
+  geom.attributes.intensity.needsUpdate = true;
+
+  renderer.render(scene, camera);
+
+  frames++; tAcc += dt;
+  if (tAcc >= 0.5) {
+    $('fps').textContent = Math.round(frames / tAcc);
+    $('sp').textContent = fmt(spikeCount);
+    const pct = N ? (spikeCount / N * 100) : 0;
+    $('pct').textContent = pct.toFixed(2) + '%';
+    $('barfill').style.width = Math.min(100, pct * 12) + '%';
+    frames = 0; tAcc = 0;
+  }
+}
+
+boot();
+</script>
+</body>
+</html>

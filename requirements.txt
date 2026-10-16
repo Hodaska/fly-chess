@@ -1,0 +1,14 @@
+# Игра и сервер (обязательно). torch — сборка под CUDA 12.4, ставить так:
+#   pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+torch==2.6.0
+numpy==2.5.3
+pyarrow==25.0.1
+pandas==3.0.6
+chess==1.11.2
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+pydantic==2.13.5
+
+# Только для пересборки 3D-мухи (scripts/build_body_assets.py), для игры не нужно:
+# mujoco==3.14.0
+# fast-simplification

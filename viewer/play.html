@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Шахматы против мухи</title>
+<style>
+  :root {
+    --bg: #07090c;
+    --panel: rgba(12, 15, 20, .82);
+    --fg: #d7dee6;
+    --dim: #6c7b8a;
+    --line: rgba(255, 255, 255, .08);
+    --accent: #ffb85c;
+    --sq-light: #d8d2c4;
+    --sq-dark: #7c8995;
+    --sq-last: rgba(255, 196, 92, .45);
+    --sq-sel: rgba(255, 196, 92, .75);
+    --sq-check: rgba(235, 80, 70, .8);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 14px/1.5 system-ui, "Segoe UI", sans-serif;
+  }
+  .mono { font-family: ui-monospace, "SF Mono", Consolas, monospace; }
+
+  .app {
+    display: grid;
+    grid-template-columns: minmax(320px, 560px) 1fr;
+    gap: 20px;
+    height: 100vh;
+    padding: 20px;
+  }
+  @media (max-width: 900px) {
+    .app { grid-template-columns: 1fr; height: auto; }
+    .brain-wrap { height: 70vh; }
+  }
+
+  .left { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+  h1 { font-size: 15px; font-weight: 600; letter-spacing: .02em; }
+  h1 span { color: var(--dim); font-weight: 400; }
+
+  .board {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    grid-template-rows: repeat(8, 1fr);
+    aspect-ratio: 1;
+    width: 100%;
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, .5);
+    user-select: none;
+  }
+  .sq {
+    position: relative;
+    display: grid; place-items: center;
+    cursor: pointer;
+  }
+  .sq.light { background: var(--sq-light); }
+  .sq.dark { background: var(--sq-dark); }
+  .sq.last::before, .sq.sel::before, .sq.check::before {
+    content: ""; position: absolute; inset: 0;
+  }
+  .sq.last::before { background: var(--sq-last); }
+  .sq.sel::before { background: var(--sq-sel); }
+  .sq.check::before { background: radial-gradient(circle, var(--sq-check) 20%, transparent 75%); }
+  .sq.target::after {
+    content: ""; position: absolute;
+    width: 28%; height: 28%; border-radius: 50%;
+    background: rgba(20, 24, 30, .35);
+  }
+  .sq.target.occupied::after {
+    width: 88%; height: 88%; background: none;
+    border: 5px solid rgba(20, 24, 30, .35);
+  }
+  .coord {
+    position: absolute; font-size: 10px; font-weight: 600;
+    opacity: .7; pointer-events: none;
+  }
+  .coord.file { right: 4px; bottom: 2px; }
+  .coord.rank { left: 4px; top: 2px; }
+  .sq.light .coord { color: var(--sq-dark); }
+  .sq.dark .coord { color: var(--sq-light); }
+
+  .pc {
+    position: relative; z-index: 1;
+    font-family: "Segoe UI Symbol", "Noto Sans Symbols 2", "DejaVu Sans", serif;
+    font-size: min(5.6vw, 52px);
+    line-height: 1;
+    pointer-events: none;
+  }
+  .pc.w { color: #fbfaf6; text-shadow: 0 0 2px #000, 0 0 1px #000, 0 2px 3px rgba(0,0,0,.45); }
+  .pc.b { color: #16181c; text-shadow: 0 0 1px rgba(255,255,255,.35); }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+  .status { font-size: 15px; font-weight: 500; min-height: 22px; }
+  .status.thinking { color: var(--accent); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  button {
+    font: inherit; font-size: 13px;
+    color: var(--fg); background: rgba(255, 255, 255, .06);
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 12px; cursor: pointer;
+  }
+  button:hover { background: rgba(255, 255, 255, .11); }
+  button:disabled { opacity: .45; cursor: default; }
+  select {
+    font: inherit; font-size: 13px; color: var(--fg);
+    background: rgba(255, 255, 255, .06); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 10px;
+  }
+  select option { background: #11151b; }
+  #selfplay.running { color: var(--accent); border-color: rgba(255, 184, 92, .4); }
+
+  .label { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 6px; }
+  .cands { display: flex; flex-direction: column; gap: 5px; }
+  .cand { display: grid; grid-template-columns: 56px 1fr 44px; align-items: center; gap: 8px; font-size: 13px; }
+  .bar { height: 5px; background: rgba(255,255,255,.07); border-radius: 3px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--accent); }
+  .cand.chosen { color: var(--accent); }
+  .moves { font-size: 13px; color: var(--dim); max-height: 110px; overflow-y: auto; }
+  .moves b { color: var(--fg); font-weight: 500; }
+
+  .brain-wrap {
+    position: relative;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+    min-height: 0;
+    background: radial-gradient(ellipse at center, #0d1117 0%, var(--bg) 70%);
+  }
+  #gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .hud {
+    position: absolute; left: 14px; top: 12px;
+    font-size: 12px; color: var(--dim); pointer-events: none;
+  }
+  .hud b { color: var(--fg); font-weight: 500; }
+  .think {
+    position: absolute; left: 14px; right: 14px; bottom: 12px;
+    font-size: 12px; color: var(--dim); pointer-events: none;
+  }
+  .think .prog { height: 3px; background: rgba(255,255,255,.07); border-radius: 2px; margin-top: 6px; overflow: hidden; }
+  .think .prog i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .05s linear; }
+  .think .step { color: var(--accent); }
+  .brain-ctl {
+    position: absolute; right: 12px; top: 10px;
+    display: flex; gap: 6px; z-index: 2;
+  }
+  .brain-ctl button { font-size: 12px; padding: 6px 10px; }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; background: transparent; }
+  .seg button.on { background: rgba(255, 184, 92, .18); color: var(--accent); }
+  .mode-note {
+    position: absolute; right: 14px; top: 46px; max-width: 300px;
+    font-size: 11px; color: var(--dim); text-align: right; pointer-events: none;
+  }
+  .loading {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    color: var(--dim); font-size: 13px;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="left">
+    <h1>Шахматы против мухи <span>· мозг дрозофилы, MaleCNS v1.0</span></h1>
+
+    <div class="board" id="board" aria-label="Шахматная доска"></div>
+
+    <div class="panel">
+      <div class="status" id="status">загрузка…</div>
+    </div>
+
+    <div class="row">
+      <button id="new-w">Новая партия белыми</button>
+      <button id="new-b">Новая партия чёрными</button>
+    </div>
+    <div class="row">
+      <button id="selfplay">Муха против мухи</button>
+      <select id="speed" aria-label="Скорость">
+        <option value="1">скорость ×1</option>
+        <option value="4" selected>скорость ×4</option>
+        <option value="16">скорость ×16</option>
+      </select>
+    </div>
+
+    <div class="panel">
+      <div class="label">Что рассматривала муха</div>
+      <div class="cands" id="cands"><span style="color:var(--dim);font-size:13px">ещё не ходила</span></div>
+    </div>
+
+    <div class="panel">
+      <div class="label">Ходы</div>
+      <div class="moves mono" id="moves">—</div>
+    </div>
+  </div>
+
+  <div class="brain-wrap">
+    <canvas id="gl"></canvas>
+    <div class="loading" id="loading">загружаю мозг…</div>
+    <div class="hud mono" id="hud"></div>
+    <div class="brain-ctl">
+      <div class="seg">
+        <button id="m-show" class="on">эффектно</button>
+        <button id="m-real">реалистично</button>
+      </div>
+      <button id="replay" disabled>↻ повторить ход</button>
+      <button id="view-toggle"></button>
+    </div>
+    <div class="mode-note" id="mode-note"></div>
+    <div class="think mono" id="think">
+      <div id="think-text">мозг ждёт вашего хода</div>
+      <div class="prog"><i id="prog"></i></div>
+    </div>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js" } }
+</script>
+
+<script type="module">
+import { createBrain } from '/static/brain.js';
+
+const $ = id => document.getElementById(id);
+const GLYPH = { k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟' };
+const FILES = 'abcdefgh';
+
+let st = null;       // состояние партии с сервера
+let sel = null;      // выбранная клетка
+let busy = false;
+let brain = null;
+let lastTrace = null;  // активность последнего хода мухи, для повтора
+// вид: 'fly' — вся муха (тело + мозг + нервный тяж), 'brain' — только мозг
+const VIEW = new URLSearchParams(location.search).get('view') === 'brain' ? 'brain' : 'fly';
+let selfplay = false;  // идёт партия муха против мухи
+let selfLoop = null;
+// скорость: [мс на кадр, показывать каждый k-й шаг]
+const SPEEDS = { 1: [32, 1], 4: [16, 2], 16: [16, 8] };
+
+const REASON = {
+  checkmate: 'мат', stalemate: 'пат',
+  insufficient_material: 'ничья: мало материала',
+  seventyfive_moves: 'ничья по правилу 75 ходов',
+  fivefold_repetition: 'ничья повторением',
+  fifty_moves: 'ничья по правилу 50 ходов',
+  threefold_repetition: 'ничья повторением',
+};
+
+async function api(path, body) {
+  const r = await fetch(path, {
+    method: body === undefined ? 'GET' : 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+  return r.json();
+}
+
+function parseFen(fen) {
+  const rows = fen.split(' ')[0].split('/');
+  const grid = {};
+  rows.forEach((row, ri) => {
+    let f = 0;
+    for (const ch of row) {
+      if (/\d/.test(ch)) { f += +ch; continue; }
+      grid[FILES[f] + (8 - ri)] = ch;
+      f++;
+    }
+  });
+  return grid;
+}
+
+function kingSquare(grid, color) {
+  const k = color === 'w' ? 'K' : 'k';
+  return Object.keys(grid).find(s => grid[s] === k);
+}
+
+function render() {
+  const grid = parseFen(st.fen);
+  const flip = st.human === 'b';
+  const targets = sel ? st.legal.filter(m => m.startsWith(sel)).map(m => m.slice(2, 4)) : [];
+  const last = st.last ? [st.last.slice(0, 2), st.last.slice(2, 4)] : [];
+  const checkSq = st.check ? kingSquare(grid, st.turn) : null;
+
+  const el = $('board');
+  el.innerHTML = '';
+  for (let r = 0; r < 8; r++) {
+    for (let f = 0; f < 8; f++) {
+      const file = flip ? 7 - f : f;
+      const rank = flip ? r + 1 : 8 - r;
+      const sq = FILES[file] + rank;
+      const d = document.createElement('div');
+      d.dataset.sq = sq;
+      d.className = 'sq ' + ((file + rank) % 2 === 1 ? 'dark' : 'light');  // a1 тёмная
+      if (last.includes(sq)) d.classList.add('last');
+      if (sq === sel) d.classList.add('sel');
+      if (sq === checkSq) d.classList.add('check');
+      if (targets.includes(sq)) d.classList.add('target');
+      const pc = grid[sq];
+      if (pc) {
+        d.classList.add('occupied');
+        const s = document.createElement('span');
+        s.className = 'pc ' + (pc === pc.toUpperCase() ? 'w' : 'b');
+        s.textContent = GLYPH[pc.toLowerCase()] + '︎';
+        d.appendChild(s);
+      }
+      if (r === 7) d.insertAdjacentHTML('beforeend', `<span class="coord file">${FILES[file]}</span>`);
+      if (f === 0) d.insertAdjacentHTML('beforeend', `<span class="coord rank">${rank}</span>`);
+      d.addEventListener('click', () => onSquare(sq, grid));
+      el.appendChild(d);
+    }
+  }
+
+  const h = st.history;
+  $('moves').innerHTML = h.length
+    ? h.reduce((acc, san, i) => acc + (i % 2 === 0 ? `<b>${i / 2 + 1}.</b> ` : '') + san + ' ', '')
+    : '—';
+  $('moves').scrollTop = 1e9;
+
+  if (st.fly_top.length) {
+    $('cands').innerHTML = st.fly_top.map((c, i) => `
+      <div class="cand${c.uci === st.last ? ' chosen' : ''}">
+        <span class="mono">${c.san}</span>
+        <div class="bar"><i style="width:${(c.p * 100).toFixed(1)}%"></i></div>
+        <span class="mono">${(c.p * 100).toFixed(0)}%</span>
+      </div>`).join('');
+  }
+
+  setStatus();
+}
+
+function setStatus(text, thinking = false) {
+  const s = $('status');
+  s.classList.toggle('thinking', thinking);
+  if (text) { s.textContent = text; return; }
+  if (st.over) {
+    const win = st.result === '1-0' ? 'w' : st.result === '0-1' ? 'b' : null;
+    let who = '';
+    if (win && st.human === 'none') who = win === 'w' ? ' · победила белая муха' : ' · победила чёрная муха';
+    else if (win) who = win === st.human ? ' · вы победили' : ' · победила муха';
+    s.textContent = `${REASON[st.reason] || 'партия окончена'} ${st.result}${who}`;
+  } else if (st.human === 'none') {
+    s.textContent = st.turn === 'w' ? 'ход белой мухи' : 'ход чёрной мухи';
+  } else if (st.turn === st.human) {
+    s.textContent = st.check ? 'ваш ход — вам шах' : 'ваш ход';
+  } else {
+    s.textContent = 'ход мухи';
+  }
+}
+
+function onSquare(sq, grid) {
+  if (busy || st.over || st.turn !== st.human) return;
+  const pc = grid[sq];
+  const mine = pc && (pc === pc.toUpperCase() ? 'w' : 'b') === st.human;
+
+  if (sel) {
+    const moves = st.legal.filter(m => m.startsWith(sel + sq));
+    if (moves.length) {
+      const uci = moves.find(m => m.endsWith('q')) || moves[0];  // превращение — в ферзя
+      sel = null;
+      return humanMove(uci);
+    }
+  }
+  sel = mine && st.legal.some(m => m.startsWith(sq)) ? (sel === sq ? null : sq) : null;
+  render();
+}
+
+async function humanMove(uci) {
+  busy = true;
+  try {
+    st = await api('/move', { uci });
+    render();
+    if (!st.over) await flyMove();
+  } catch (e) {
+    setStatus('ошибка: ' + e.message);
+  } finally {
+    busy = false;
+  }
+}
+
+function flyName() {
+  if (st.human !== 'none') return 'муха';
+  return st.turn === 'w' ? 'белая муха' : 'чёрная муха';
+}
+
+async function flyMove() {
+  const who = flyName();
+  setStatus(`${who} думает…`, true);
+  $('think-text').innerHTML = `${who} смотрит на доску…`;
+  const next = await api('/think', {});
+  const r = await fetch(`/trace?ply=${next.history.length}`);
+  lastTrace = r.ok ? await r.arrayBuffer() : null;
+  const speed = st.human === 'none' ? +$('speed').value : 1;
+  await play(lastTrace, speed, who);
+
+  st = next;
+  render();
+  const [frameMs, every] = SPEEDS[speed];
+  $('think-text').innerHTML =
+    `${who} выбрала <span class="step">${st.history.at(-1) || '—'}</span> · ` +
+    `показано в замедлении ×${Math.round(frameMs / every / brain.meta.dtMs)}`;
+  $('replay').disabled = false;
+}
+
+async function play(buf, speed = 1, who = 'муха') {
+  const dt = brain.meta.dtMs;
+  const N = brain.meta.neurons;
+  const [frameMs, every] = SPEEDS[speed];
+  await brain.playTrace(buf, (step, total, n) => {
+    $('prog').style.width = (step / total * 100) + '%';
+    $('think-text').innerHTML =
+      `${who} думает · шаг <span class="step">${step}/${total}</span> · ` +
+      `${(step * dt).toFixed(1)} мс мозга · спайков: <span class="step">${n}</span> ` +
+      `(${(n / N * 100).toFixed(1)}% нейронов)`;
+  }, frameMs, every);
+}
+
+const NOTES = {
+  show: 'вспышка тянется несколько шагов и раздувается — кажется, что горит весь мозг',
+  real: 'только спайки текущего шага, без накопления: ~1.5% нейронов, как на самом деле',
+};
+function setMode(name) {
+  brain?.setMode(name);
+  $('m-show').classList.toggle('on', name === 'show');
+  $('m-real').classList.toggle('on', name === 'real');
+  $('mode-note').textContent = NOTES[name];
+}
+$('m-show').onclick = () => setMode('show');
+$('m-real').onclick = () => setMode('real');
+$('replay').onclick = async () => {
+  if (busy || !lastTrace) return;
+  busy = true;
+  $('replay').disabled = true;
+  try { await play(lastTrace); } finally { busy = false; $('replay').disabled = false; }
+};
+
+async function stopSelfPlay() {
+  if (!selfplay) return;
+  selfplay = false;
+  await selfLoop;
+}
+
+function resetPanels(text) {
+  $('cands').innerHTML = '<span style="color:var(--dim);font-size:13px">ещё не ходила</span>';
+  $('prog').style.width = '0';
+  $('think-text').textContent = text;
+}
+
+async function toggleSelfPlay() {
+  if (selfplay) return stopSelfPlay();
+  if (busy) return;
+  selfplay = true;
+  $('selfplay').textContent = 'Остановить';
+  $('selfplay').classList.add('running');
+  selfLoop = (async () => {
+    busy = true;
+    sel = null;
+    try {
+      st = await api('/new', { color: 'none' });
+      resetPanels('две мухи садятся за доску…');
+      render();
+      while (selfplay && !st.over) await flyMove();
+    } catch (e) {
+      setStatus('ошибка: ' + e.message);
+    } finally {
+      busy = false;
+      selfplay = false;
+      $('selfplay').textContent = 'Муха против мухи';
+      $('selfplay').classList.remove('running');
+    }
+  })();
+  await selfLoop;
+}
+$('selfplay').onclick = toggleSelfPlay;
+
+async function newGame(color) {
+  await stopSelfPlay();
+  if (busy) return;
+  busy = true;
+  sel = null;
+  try {
+    st = await api('/new', { color });
+    resetPanels('мозг ждёт вашего хода');
+    render();
+    if (st.turn !== st.human) await flyMove();
+  } finally {
+    busy = false;
+  }
+}
+
+$('new-w').onclick = () => newGame('w');
+$('new-b').onclick = () => newGame('b');
+
+st = await api('/state');
+render();
+
+$('view-toggle').textContent = VIEW === 'fly' ? 'только мозг' : 'вся муха';
+$('view-toggle').onclick = () => { location.search = '?view=' + (VIEW === 'fly' ? 'brain' : 'fly'); };
+brain = await createBrain($('gl'), { view: VIEW });
+setMode('show');
+$('loading').remove();
+
+// последний ход мухи мог быть сделан до перезагрузки страницы — подхватываем
+const saved = await fetch('/trace').then(r => r.arrayBuffer());
+if (saved.byteLength > 4) {
+  lastTrace = saved;
+  $('replay').disabled = false;
+  const mv = st.history.at(-1);
+  if (mv) $('think-text').innerHTML = `последний ход мухи: <span class="step">${mv}</span> — можно повторить`;
+}
+$('hud').innerHTML =
+  `нейронов <b>${brain.meta.neurons.toLocaleString('ru-RU')}</b> · ` +
+  `связей <b>${brain.meta.edges.toLocaleString('ru-RU')}</b>` +
+  (brain.fly
+    ? `<br>+ нервный тяж <b>${(brain.N - brain.meta.neurons).toLocaleString('ru-RU')}</b> — только анатомия, не симулируется` +
+      `<br>тело: flybody (DeepMind + Janelia), совмещение ручное`
+    : '');
+if (st.human !== 'none' && st.turn !== st.human && !st.over) {
+  busy = true; try { await flyMove(); } finally { busy = false; }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+.venv/
+cache/
+__pycache__/
+*.pyc
+tools/
+.playwright-cli/
+.cl*/
+# данные: в репозитории только обученная голова и пороги (маленькие), коннектом скачивается play.py
+data/*
+!data/readout_model.pt
+!data/brain_thresholds.pt
+# рабочие материалы и личные заметки
+CLA*.md
+assets_src/
+scripts/figures/
+*.glb.bak
+/*.glb
+/*.zip
